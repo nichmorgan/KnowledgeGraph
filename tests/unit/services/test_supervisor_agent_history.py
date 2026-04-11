@@ -54,7 +54,7 @@ class TestFormatHistory:
         )
         assert result == expected
 
-    def test_unknown_role_used_verbatim(self):
+    def test_unknown_role_defaults_to_tutor_label(self):
         # Non-user roles fall through to the "Tutor" label; content must still appear
         msg = LLMMessage(role="system", content="System prompt here.")
         result = self._fmt([msg])
