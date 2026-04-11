@@ -1,15 +1,14 @@
 """Tests for response rewriter — Concern #4: KG Internals Exposed (TDD RED phase)."""
 
 import pytest
-from unittest.mock import MagicMock
 
 from app.services.supervisor_agent import SupervisorAgentService
 
 
 @pytest.fixture
-def supervisor_agent_with_rewriter(mock_user_service, mock_graphrag):
-    hint_agent = MagicMock()
-    rewrite_agent = MagicMock()
+def supervisor_agent_with_rewriter(mocker, mock_user_service, mock_graphrag):
+    hint_agent = mocker.MagicMock()
+    rewrite_agent = mocker.MagicMock()
     return SupervisorAgentService(
         user_service=mock_user_service,
         graph_rag=mock_graphrag,
@@ -19,25 +18,25 @@ def supervisor_agent_with_rewriter(mock_user_service, mock_graphrag):
 
 
 @pytest.fixture
-def _happy_path_mocks(mock_user_service, mock_graphrag, user_trajectory):
-    mock_user = MagicMock()
+def _happy_path_mocks(mocker, mock_user_service, mock_graphrag, user_trajectory):
+    mock_user = mocker.MagicMock()
     mock_user.id = "u1"
     mock_user_service.get_user.side_effect = lambda uid: mock_user
     mock_user_service.add_trajectory_entry.side_effect = lambda *a: user_trajectory
 
-    mock_rag_result = MagicMock()
+    mock_rag_result = mocker.MagicMock()
     mock_rag_result.answer = (
         "Based on the knowledge graph node 'angr_framework', "
         "the concept graph shows a PREREQUISITE_FOR relationship "
         "to 'symbolic_execution'."
     )
-    item = MagicMock()
+    item = mocker.MagicMock()
     item.content = "{'name': 'angr_framework'}"
     item.metadata = {"score": 0.9}
     mock_rag_result.retriever_result.items = [item]
     mock_graphrag.search.side_effect = lambda *a, **kw: mock_rag_result
 
-    t1 = MagicMock()
+    t1 = mocker.MagicMock()
     t1.id = "t1"
     mock_user_service.get_user_trajectory_by_query_exact_match.side_effect = (
         lambda *a, **kw: [t1]
@@ -45,22 +44,24 @@ def _happy_path_mocks(mock_user_service, mock_graphrag, user_trajectory):
     mock_user_service.get_user_trajectory_by_query_similarity.side_effect = (
         lambda *a, **kw: []
     )
-    t_hist = MagicMock()
+    t_hist = mocker.MagicMock()
     t_hist.query = "how to run the code"
     mock_user_service.get_user_trajectory.side_effect = lambda *a, **kw: [t_hist]
     return mock_user_service, mock_graphrag
 
 
-def test_rewriter_strips_kg_terms(supervisor_agent_with_rewriter, _happy_path_mocks):
+def test_rewriter_strips_kg_terms(
+    mocker, supervisor_agent_with_rewriter, _happy_path_mocks
+):
     rewritten = (
         "Angr is a Python framework for binary analysis. "
         "Before using it, you should understand symbolic execution."
     )
     svc = supervisor_agent_with_rewriter
-    mock_out = MagicMock()
+    mock_out = mocker.MagicMock()
     mock_out.output = rewritten
     svc._SupervisorAgentService__rewrite_agent.run_sync.return_value = mock_out
-    mock_hint_out = MagicMock()
+    mock_hint_out = mocker.MagicMock()
     mock_hint_out.output = ""
     svc._SupervisorAgentService__hint_agent.run_sync.return_value = mock_hint_out
 
@@ -72,7 +73,7 @@ def test_rewriter_strips_kg_terms(supervisor_agent_with_rewriter, _happy_path_mo
 
 
 def test_raw_answer_preserved_in_trajectory(
-    supervisor_agent_with_rewriter, _happy_path_mocks
+    mocker, supervisor_agent_with_rewriter, _happy_path_mocks
 ):
     svc = supervisor_agent_with_rewriter
     raw = (
@@ -82,10 +83,10 @@ def test_raw_answer_preserved_in_trajectory(
     )
     rewritten = "X is related to Y in this context."
 
-    mock_out = MagicMock()
+    mock_out = mocker.MagicMock()
     mock_out.output = rewritten
     svc._SupervisorAgentService__rewrite_agent.run_sync.return_value = mock_out
-    mock_hint_out = MagicMock()
+    mock_hint_out = mocker.MagicMock()
     mock_hint_out.output = ""
     svc._SupervisorAgentService__hint_agent.run_sync.return_value = mock_hint_out
 
@@ -93,7 +94,7 @@ def test_raw_answer_preserved_in_trajectory(
 
     def _capture_traj(*a):
         captured["traj"] = a[1] if len(a) > 1 else a[0]
-        return MagicMock()
+        return mocker.MagicMock()
 
     _happy_path_mocks[0].add_trajectory_entry.side_effect = _capture_traj
     svc.retrieve_context("u1", "q", "c1")
@@ -105,14 +106,14 @@ def test_raw_answer_preserved_in_trajectory(
 
 
 def test_rewriter_called_before_returning_result(
-    supervisor_agent_with_rewriter, _happy_path_mocks
+    mocker, supervisor_agent_with_rewriter, _happy_path_mocks
 ):
     rewritten = "This is a clean, student-friendly answer."
     svc = supervisor_agent_with_rewriter
-    mock_out = MagicMock()
+    mock_out = mocker.MagicMock()
     mock_out.output = rewritten
     svc._SupervisorAgentService__rewrite_agent.run_sync.return_value = mock_out
-    mock_hint_out = MagicMock()
+    mock_hint_out = mocker.MagicMock()
     mock_hint_out.output = ""
     svc._SupervisorAgentService__hint_agent.run_sync.return_value = mock_hint_out
 
@@ -123,14 +124,14 @@ def test_rewriter_called_before_returning_result(
 
 
 def test_rewriter_not_called_when_no_answer(
-    supervisor_agent_with_rewriter, mock_user_service, mock_graphrag
+    mocker, supervisor_agent_with_rewriter, mock_user_service, mock_graphrag
 ):
     svc = supervisor_agent_with_rewriter
-    mock_user = MagicMock()
+    mock_user = mocker.MagicMock()
     mock_user.id = "u1"
     mock_user_service.get_user.side_effect = lambda uid: mock_user
 
-    mock_rag_result = MagicMock()
+    mock_rag_result = mocker.MagicMock()
     mock_rag_result.answer = ""
     mock_rag_result.retriever_result.items = []
     mock_graphrag.search.side_effect = lambda *a, **kw: mock_rag_result
@@ -142,8 +143,8 @@ def test_rewriter_not_called_when_no_answer(
         lambda *a, **kw: []
     )
     mock_user_service.get_user_trajectory.side_effect = lambda *a, **kw: []
-    mock_user_service.add_trajectory_entry.side_effect = lambda *a: MagicMock()
-    mock_hint_out = MagicMock()
+    mock_user_service.add_trajectory_entry.side_effect = lambda *a: mocker.MagicMock()
+    mock_hint_out = mocker.MagicMock()
     mock_hint_out.output = ""
     svc._SupervisorAgentService__hint_agent.run_sync.return_value = mock_hint_out
 
@@ -154,20 +155,20 @@ def test_rewriter_not_called_when_no_answer(
 
 
 def test_backward_compat_no_rewrite_agent(
-    mock_user_service, mock_graphrag, user_trajectory
+    mocker, mock_user_service, mock_graphrag, user_trajectory
 ):
     svc = SupervisorAgentService(
         user_service=mock_user_service,
         graph_rag=mock_graphrag,
-        hint_agent=MagicMock(),
+        hint_agent=mocker.MagicMock(),
     )
-    mock_user = MagicMock()
+    mock_user = mocker.MagicMock()
     mock_user.id = "u1"
     mock_user_service.get_user.side_effect = lambda uid: mock_user
     mock_user_service.add_trajectory_entry.side_effect = lambda *a: user_trajectory
 
     raw_answer = "Knowledge graph node 'X' shows concept 'Y'."
-    mock_rag_result = MagicMock()
+    mock_rag_result = mocker.MagicMock()
     mock_rag_result.answer = raw_answer
     mock_rag_result.retriever_result.items = []
     mock_graphrag.search.side_effect = lambda *a, **kw: mock_rag_result
@@ -179,10 +180,69 @@ def test_backward_compat_no_rewrite_agent(
         lambda *a, **kw: []
     )
     mock_user_service.get_user_trajectory.side_effect = lambda *a, **kw: []
-    mock_hint_out = MagicMock()
+    mock_hint_out = mocker.MagicMock()
     mock_hint_out.output = ""
     svc._SupervisorAgentService__hint_agent.run_sync.return_value = mock_hint_out
 
     res = svc.retrieve_context("u1", "q", "c1")
     assert res is not None
     assert res.answer == raw_answer
+
+
+def test_rewrite_prompt_bans_graph_terminology(
+    mocker, supervisor_agent_with_rewriter, _happy_path_mocks
+):
+    """Prompt sent to rewrite agent must explicitly ban internal KG terms."""
+    svc = supervisor_agent_with_rewriter
+    mock_out = mocker.MagicMock()
+    mock_out.output = "Clean answer."
+    svc._SupervisorAgentService__rewrite_agent.run_sync.return_value = mock_out
+    mock_hint_out = mocker.MagicMock()
+    mock_hint_out.output = ""
+    svc._SupervisorAgentService__hint_agent.run_sync.return_value = mock_hint_out
+
+    svc.retrieve_context("u1", "what is angr?", "c1")
+
+    call_args = svc._SupervisorAgentService__rewrite_agent.run_sync.call_args
+    prompt_sent = call_args[0][0]
+
+    banned_terms = [
+        "nodes",
+        "graph",
+        "knowledge graph",
+        "PREREQUISITE_FOR",
+        "DEPENDS_ON",
+        "EXTENDS_TO",
+        "ENABLES",
+        "retrieval",
+        "scores",
+        "labels",
+        "edges",
+    ]
+    for term in banned_terms:
+        assert term in prompt_sent, f"Prompt must list '{term}' as a banned term"
+
+
+def test_rewrite_prompt_frames_as_human_tutor(
+    mocker, supervisor_agent_with_rewriter, _happy_path_mocks
+):
+    """Prompt must instruct the rewrite agent to respond as a human tutor."""
+    svc = supervisor_agent_with_rewriter
+    mock_out = mocker.MagicMock()
+    mock_out.output = "Clean answer."
+    svc._SupervisorAgentService__rewrite_agent.run_sync.return_value = mock_out
+    mock_hint_out = mocker.MagicMock()
+    mock_hint_out.output = ""
+    svc._SupervisorAgentService__hint_agent.run_sync.return_value = mock_hint_out
+
+    svc.retrieve_context("u1", "what is angr?", "c1")
+
+    call_args = svc._SupervisorAgentService__rewrite_agent.run_sync.call_args
+    prompt_sent = call_args[0][0]
+
+    assert "human tutor" in prompt_sent.lower(), (
+        "Prompt must frame the rewriter as a human tutor"
+    )
+    assert "Never reference internal system" in prompt_sent, (
+        "Prompt must ban references to internal system structure"
+    )
