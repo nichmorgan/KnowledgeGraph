@@ -139,7 +139,7 @@ def test_update_course_members(course_controller, mock_knowledge_service):
 def test_chat_send(course_controller, mock_chat_service, mock_supervisor_agent_service):
     from app.services.supervisor_agent import SupervisorResult
 
-    mock_chat_service.get_messages.side_effect = lambda *a: []
+    mock_chat_service.get_messages.side_effect = lambda *a, **kw: []
     mock_chat_service.to_llm_messages.side_effect = lambda msgs: []
     mock_chat_service.add_message.side_effect = lambda user_id, course_id, msg: msg
 
