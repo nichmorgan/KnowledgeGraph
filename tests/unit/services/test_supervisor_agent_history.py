@@ -12,7 +12,7 @@ from app.services.supervisor_agent import SupervisorAgentService
 
 
 def _make_history(*pairs: tuple[str, str]) -> list[LLMMessage]:
-    """Build a list of LLMMessages from (role, content) pairs."""
+    """Build a list of LLM messages from (role, content) pairs."""
     return [LLMMessage(role=role, content=content) for role, content in pairs]
 
 
