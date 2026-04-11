@@ -201,10 +201,6 @@ class Services(containers.DeclarativeContainer):
         services.DashboardService,
         session_factory=gateways.neo4j_session.provider,
     )
-    dashboard = providers.Factory(
-        services.DashboardService,
-        session_factory=gateways.neo4j_session.provider,
-    )
 
 
 class Controllers(containers.DeclarativeContainer):
