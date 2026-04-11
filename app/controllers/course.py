@@ -126,7 +126,7 @@ class CourseController:
             f"Processing chat message for user {user_id} in course {course_id}"
         )
 
-        history = self.__chat_service.get_messages(user_id, course_id)
+        history = self.__chat_service.get_messages(user_id, course_id, limit=20)
         llm_messages = self.__chat_service.to_llm_messages(history)
 
         self.__chat_service.add_message(

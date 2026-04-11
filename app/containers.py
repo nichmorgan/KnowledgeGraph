@@ -193,7 +193,13 @@ class Services(containers.DeclarativeContainer):
         services.SupervisorAgentService,
         user_service=user,
         graph_rag=gateways.trajectory_graphrag,
+        content_rag=gateways.content_chunk_graphrag,
         hint_agent=ai.default_agent,
+        rewrite_agent=ai.default_agent,
+    )
+    dashboard = providers.Factory(
+        services.DashboardService,
+        session_factory=gateways.neo4j_session.provider,
     )
     dashboard = providers.Factory(
         services.DashboardService,

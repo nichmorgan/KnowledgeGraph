@@ -1,3 +1,4 @@
+import json
 import logging
 from pathlib import Path
 from contextlib import AbstractContextManager
@@ -8,6 +9,58 @@ import pydantic_ai
 from neo4j import ManagedTransaction, Session, Transaction, unit_of_work
 
 from app import models, schemas, services, utils
+
+
+def _slim_knowledge_for_prompt(node: models.Knowledge) -> dict:
+    """Return a token-efficient summary of a KG node for use in LLM prompts.
+
+    Drops verbose fields (common_errors, question_prompts, evaluation_criteria,
+    bloom_level, visibility, validation_status, confidence_score, relevance_score,
+    learning_objective, source) while keeping the structural and identity fields
+    the LLM needs to avoid duplicates and extend the graph correctly.
+    """
+    if isinstance(node, models.RootKnowledge):
+        return {
+            "id": node.id,
+            "type": "root",
+            "name": node.name,
+            "children": [_slim_knowledge_for_prompt(c) for c in node.children],
+        }
+    if isinstance(node, models.ConceptualKnowledge):
+        definition = node.definition or ""
+        return {
+            "id": node.id,
+            "type": "conceptual",
+            "name": node.name,
+            "label": node.label,
+            "definition": definition[:200] + ("…" if len(definition) > 200 else ""),
+            "prerequisites": node.prerequisites,
+            "misconceptions": node.misconceptions,
+            "connections": [
+                {"relation": c.relation, "to": c.to} for c in node.connections
+            ],
+            "children": [_slim_knowledge_for_prompt(c) for c in node.children],
+        }
+    if isinstance(node, models.ProceduralKnowledge):
+        slim: dict = {
+            "id": node.id,
+            "type": "procedural",
+            "name": node.name,
+            "label": node.label,
+            "percent_done": node.percent_done,
+            "child": _slim_knowledge_for_prompt(node.child) if node.child else None,
+        }
+        return slim
+    if isinstance(node, models.AssessmentKnowledge):
+        return {
+            "id": node.id,
+            "type": "assessment",
+            "name": node.name,
+            "label": node.label,
+            "linked_challenges": node.linked_challenges,
+            "objectives": node.objectives,
+        }
+    return {"id": node.id, "type": getattr(node, "type", "unknown"), "name": getattr(node, "name", "")}
 
 
 class KnowledgeUploadService:
@@ -325,12 +378,13 @@ class KnowledgeService:
                 {"text": text, "visual": visual, "page_num": num}
                 for text, visual, num in zip(batch_text, batch_visual, page_nums)
             ]
+            slim_kg = json.dumps(_slim_knowledge_for_prompt(root_knowledge), indent=2)
             user_prompt = self.__template_env.get_template(
                 "knowledge_user_prompt.j2"
             ).render(
                 source_filename=file_path.name,
                 page_list=page_list,
-                root_knowledge=root_knowledge.model_dump_json(by_alias=True),
+                root_knowledge=slim_kg,
             )
             self.__logger.info(f"Processing pages {page_nums[0]}-{page_nums[-1]}...")
             root_knowledge = self.__agent.run_sync(
