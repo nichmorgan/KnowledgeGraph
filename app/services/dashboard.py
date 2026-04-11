@@ -1,7 +1,7 @@
 import logging
 from collections import defaultdict
 from contextlib import AbstractContextManager
-from typing import Any, Callable
+from typing import Callable
 
 from neo4j import ManagedTransaction, Session, unit_of_work
 

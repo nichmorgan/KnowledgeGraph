@@ -74,9 +74,12 @@ def test_retrieve_context_repeated_query(supervisor_agent, mock_user_service, mo
     mock_rag_result.retriever_result.items = []
     mock_graphrag.search.side_effect = lambda *a, **kw: mock_rag_result
 
-    t1 = MagicMock(); t1.id = "t1"
-    t2 = MagicMock(); t2.id = "t2"
-    t3 = MagicMock(); t3.id = "t3"
+    t1 = MagicMock()
+    t1.id = "t1"
+    t2 = MagicMock()
+    t2.id = "t2"
+    t3 = MagicMock()
+    t3.id = "t3"
     mock_user_service.get_user_trajectory_by_query_exact_match.side_effect = lambda *a, **kw: [t1, t2]
     mock_user_service.get_user_trajectory_by_query_similarity.side_effect = lambda *a, **kw: [t2, t3]
 
