@@ -1,26 +1,92 @@
 import logging
 import re
 import time
-from dataclasses import dataclass
+from pydantic import BaseModel
 
 from neo4j_graphrag.generation import GraphRAG
 from neo4j_graphrag.types import LLMMessage
 from pydantic_ai import Agent
 
 from app import models
+from enum import StrEnum
 
 from .user import UserService
 
 
-@dataclass
-class SupervisorResult:
+class SupervisorResult(BaseModel):
     answer: str
     hint_text: str | None = None
     hint_reason: str | None = None
 
 
+class Intent(StrEnum):
+    DEFINITION = "definition"
+    PROCEDURAL = "procedural"
+    TROUBLESHOOTING = "troubleshooting"
+    EXAMPLE_REQUEST = "example_request"
+    CONTEXT_REQUEST = "context_request"
+
+
 class SupervisorAgentService:
     RESPONSE_FALLBACK = "I couldn't find relevant information to answer your question. Please try rephrasing."
+
+    INTENT_KEYWORDS: dict[Intent, list[str]] = {
+        Intent.DEFINITION: [
+            "what is",
+            "what are",
+            "explain",
+            "define",
+            "definition",
+            "meaning of",
+            "describe",
+        ],
+        Intent.PROCEDURAL: [
+            "how to",
+            "how do",
+            "steps to",
+            "implement",
+            "procedure",
+            "how can i",
+            "what steps",
+        ],
+        Intent.TROUBLESHOOTING: [
+            "error in",
+            "not working",
+            "fix",
+            "bug",
+            "issue",
+            "broken",
+            "fails",
+            "exception",
+            "debug",
+        ],
+        Intent.EXAMPLE_REQUEST: [
+            "example of",
+            "show me",
+            "example",
+            "sample",
+            "demo",
+            "give me an example",
+        ],
+    }
+
+    INTENT_TO_PREFERRED_TYPES: dict[Intent, list[models.KnowledgeType]] = {
+        Intent.DEFINITION: [models.KnowledgeType.CONCEPTUAL],
+        Intent.PROCEDURAL: [models.KnowledgeType.PROCEDURAL],
+        Intent.TROUBLESHOOTING: [models.KnowledgeType.PROCEDURAL],
+        Intent.EXAMPLE_REQUEST: [models.KnowledgeType.ASSESSMENT],
+        Intent.CONTEXT_REQUEST: [
+            models.KnowledgeType.CONCEPTUAL,
+            models.KnowledgeType.PROCEDURAL,
+            models.KnowledgeType.ASSESSMENT,
+        ],
+    }
+
+    DIFFICULTY_ORDER: dict[models.KnowledgeDifficulty, int] = {
+        models.KnowledgeDifficulty.EASY: 0,
+        models.KnowledgeDifficulty.MEDIUM: 1,
+        models.KnowledgeDifficulty.HARD: 2,
+    }
 
     def __init__(
         self,
@@ -28,10 +94,12 @@ class SupervisorAgentService:
         user_service: UserService,
         graph_rag: GraphRAG,
         hint_agent: Agent,
+        rewrite_agent: Agent | None = None,
         top_k: int = 5,
         similarity_threshold: float = 0.85,
         hint_by_similarity_threshold: int = 2,
         hint_procedural_history_limit: int = 3,
+        confidence_threshold: float = 0.6,
         procedural_keywords: list[str] = [
             "run",
             "fix",
@@ -48,11 +116,13 @@ class SupervisorAgentService:
         self.__user_service = user_service
         self.__graph_rag = graph_rag
         self.__hint_agent = hint_agent
+        self.__rewrite_agent = rewrite_agent
         self.__top_k = top_k
         self.__similarity_threshold = similarity_threshold
         self.__hint_by_similarity_threshold = hint_by_similarity_threshold
         self.__hint_procedural_history_limit = hint_procedural_history_limit
         self.__procedural_keywords = procedural_keywords
+        self.__confidence_threshold = confidence_threshold
         self.__logger = logging.getLogger(__name__)
 
     def __retrieve_node_metadata(
@@ -90,6 +160,17 @@ class SupervisorAgentService:
         self.__logger.info(f"Retrieved nodes: {len(retrieved_nodes)}")
         return result, retrieved_nodes, scores, response_time_sec
 
+    def __classify_intent(self, query: str) -> str:
+        """Classify student query intent into categories.
+
+        Returns one of: definition, procedural, troubleshooting, example_request, or context_request.
+        """
+        q_lower = query.lower().strip()
+        for intent, keywords in self.INTENT_KEYWORDS.items():
+            if any(kw in q_lower for kw in keywords):
+                return intent
+        return Intent.CONTEXT_REQUEST
+
     def __get_interaction_type(self, query: str):
         q_lower = query.lower()
         keywords_mapping = {
@@ -107,7 +188,7 @@ class SupervisorAgentService:
         for interaction_type, keywords in keywords_mapping.items():
             if any(word in q_lower for word in keywords):
                 return interaction_type
-        return "context_request"
+        return Intent.CONTEXT_REQUEST
 
     def __get_similar_trajectory_queries(self, query: str, *, user_id: str):
         trajectories: list[str] = []
@@ -171,6 +252,100 @@ class SupervisorAgentService:
 
         return hint_triggered, hint_reason, hint_text
 
+    def __rewrite_response(self, raw_answer: str, query: str) -> str:
+        if not self.__rewrite_agent or not raw_answer:
+            return raw_answer
+
+        prompt = (
+            "Rewrite the following answer for a student. "
+            "Remove any references to internal system structures: "
+            "knowledge graph nodes, concept graph, retrieved nodes, "
+            "graph structure, PREREQUISITE_FOR relationships, "
+            "or any other internal metadata. "
+            "Make the answer natural, educational, and self-contained. "
+            "\n\nStudent question: " + query + "\n\nRaw answer: " + raw_answer
+        )
+        result = self.__rewrite_agent.run_sync(prompt)
+        return result.output.strip()
+
+    def __rerank_results(
+        self,
+        items: list,
+        intent: str,
+        user_id: str,
+    ) -> list:
+        """Re-rank retriever results based on intent, difficulty, and pedagogical sequence.
+
+        Uses KG node type metadata from Neo4j to determine node types.
+        Returns the same items, reordered by pedagogical relevance.
+        """
+        if not items:
+            return items
+
+        preferred_types = self.INTENT_TO_PREFERRED_TYPES.get(
+            intent,
+            [
+                models.KnowledgeType.CONCEPTUAL,
+                models.KnowledgeType.PROCEDURAL,
+                models.KnowledgeType.ASSESSMENT,
+            ],
+        )
+
+        def _extract_node_type(item) -> str:
+            metadata = item.metadata or {}
+            node_type = metadata.get("node_type", "")
+            if node_type:
+                return node_type.lower()
+            item_content = item.content if isinstance(item.content, str) else ""
+            for t in models.KnowledgeType:
+                if f"'type': '{t}'" in item_content or f'"type": "{t}"' in item_content:
+                    return t
+            return ""
+
+        def _extract_difficulty(item) -> str:
+            metadata = item.metadata or {}
+            difficulty = metadata.get("difficulty", "")
+            if difficulty:
+                return difficulty.lower()
+            item_content = item.content if isinstance(item.content, str) else ""
+            for d in models.KnowledgeDifficulty:
+                if (
+                    f"'difficulty': '{d}'" in item_content
+                    or f'"difficulty": "{d}"' in item_content
+                ):
+                    return d
+            return models.KnowledgeDifficulty.MEDIUM
+
+        def _extract_score(item) -> float:
+            metadata = item.metadata or {}
+            return metadata.get("score", 0.0) or 0.0
+
+        def _rerank_key(item) -> tuple:
+            node_type = _extract_node_type(item)
+            difficulty = _extract_difficulty(item)
+            score = _extract_score(item)
+
+            # 1. Intent match: lower is better (0 = best match)
+            if node_type in preferred_types:
+                type_rank = preferred_types.index(node_type)
+            else:
+                type_rank = len(preferred_types)
+
+            # 2. Difficulty: lower is easier
+            difficulty_rank = self.DIFFICULTY_ORDER.get(difficulty, 1)
+
+            # 3. Pedagogical sequence: conceptual -> procedural -> assessment
+            pedagogical_order = {
+                models.KnowledgeType.CONCEPTUAL: 0,
+                models.KnowledgeType.PROCEDURAL: 1,
+                models.KnowledgeType.ASSESSMENT: 2,
+            }
+            pedagogical_rank = pedagogical_order.get(node_type, 3)
+
+            return (type_rank, difficulty_rank, pedagogical_rank, -score)
+
+        return sorted(items, key=_rerank_key)
+
     def retrieve_context(
         self,
         user_id: str,
@@ -194,8 +369,43 @@ class SupervisorAgentService:
             )
             node_entry_count = len(retrieved_nodes)
 
+            # Check confidence threshold
+            if (
+                scores
+                and scores[0] is not None
+                and scores[0] < self.__confidence_threshold
+            ):
+                self.__logger.warning(
+                    f"Low confidence query (score={scores[0]:.2f} < {self.__confidence_threshold:.2f}): {query}"
+                )
+                return SupervisorResult(
+                    answer=self.RESPONSE_FALLBACK,
+                    hint_text=None,
+                    hint_reason=None,
+                )
+
             self.__logger.info("Determining interaction type...")
-            interaction_type = self.__get_interaction_type(query)
+            interaction_type = self.__classify_intent(query)
+
+            # Re-rank retriever results based on intent, difficulty, and pedagogical sequence
+            if rag_result.retriever_result and rag_result.retriever_result.items:
+                rag_result.retriever_result.items = self.__rerank_results(
+                    rag_result.retriever_result.items,
+                    interaction_type,
+                    user.id,
+                )
+                # Recompute node names and scores after re-ranking
+                retrieved_nodes = []
+                scores = []
+                for item in rag_result.retriever_result.items:
+                    node_name = "Unknown"
+                    if isinstance(item.content, str):
+                        match = re.search(r"'name': '([^']+)'", item.content)
+                        if match:
+                            node_name = match.group(1)
+                    retrieved_nodes.append(node_name)
+                    if isinstance(item.metadata, dict):
+                        scores.append(item.metadata.get("score"))
 
             self.__logger.info("Computing node count and repeat count...")
             similar_trajectory_ids = self.__get_similar_trajectory_queries(
@@ -210,6 +420,9 @@ class SupervisorAgentService:
                 user_id=user.id,
             )
 
+            raw_answer = rag_result.answer if rag_result else ""
+            rewritten_answer = self.__rewrite_response(raw_answer, query)
+
             new_trajectory = models.UserTrajectory(
                 user_id=user.id,
                 query=query,
@@ -222,6 +435,7 @@ class SupervisorAgentService:
                 hint_triggered=hint_triggered,
                 hint_reason=hint_reason,
                 hint_text=hint_text,
+                raw_answer=raw_answer,
                 course_id=course_id,
             )
             self.__user_service.add_trajectory_entry(user_id, new_trajectory)
@@ -229,7 +443,7 @@ class SupervisorAgentService:
                 f"Context retrieval logged. ({interaction_type}, {node_entry_count} nodes, {response_time_sec}s)"
             )
             return SupervisorResult(
-                answer=rag_result.answer if rag_result else "",
+                answer=rewritten_answer,
                 hint_text=hint_text,
                 hint_reason=hint_reason,
             )

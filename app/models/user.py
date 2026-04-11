@@ -49,6 +49,7 @@ class UserTrajectory(BaseModel):
     hint_text: str | None = None
     hint_approval_status: HintApprovalStatus | None = None
     hint_read_when: datetime | None = None
+    raw_answer: str | None = None
     course_id: str | None = None
 
     user_id: str
